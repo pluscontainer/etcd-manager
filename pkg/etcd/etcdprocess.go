@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/blang/semver/v4"
+	cp "github.com/otiai10/copy"
 	certutil "k8s.io/client-go/util/cert"
 	"k8s.io/klog/v2"
 	protoetcd "sigs.k8s.io/etcd-manager/pkg/apis/etcd"
@@ -62,8 +63,10 @@ func init() {
 
 // etcdProcess wraps a running etcd process
 type etcdProcess struct {
-	BinDir  string
-	DataDir string
+	BinDir    string
+	DataDir   string
+	BaseDir   *string
+	BackupDir *string
 
 	// CurrentDir is the directory in which we launch the binary (cwd)
 	CurrentDir string
@@ -332,6 +335,23 @@ func (p *etcdProcess) Start() error {
 			exitCode = processState.ExitCode()
 		}
 		klog.Infof("etcd process exited (datadir %s; pid=%d); exitCode=%d, exitErr=%v", p.DataDir, p.cmd.Process.Pid, exitCode, err)
+
+		if p.BackupDir != nil && p.BaseDir != nil {
+			klog.Info("backing up the data dir")
+
+			copyOptions := cp.Options{
+				OnDirExists: func(src, dest string) cp.DirExistsAction {
+					return cp.Replace
+				},
+			}
+
+			if err := cp.Copy(*p.BaseDir, *p.BackupDir, copyOptions); err != nil {
+				klog.Errorf("couldn't backup local ssd data dir to cinder: %v", err)
+				return
+			}
+
+			klog.Infof("Succesfully saved copy of data dir (%s) to %s", *p.BaseDir, *p.BackupDir)
+		}
 	}()
 
 	return nil

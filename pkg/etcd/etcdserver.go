@@ -42,6 +42,7 @@ const PreparedValidity = time.Minute
 
 type EtcdServer struct {
 	baseDir               string
+	backupDir             string
 	peerServer            *privateapi.Server
 	etcdNodeConfiguration *protoetcd.EtcdNode
 	clusterName           string
@@ -72,9 +73,10 @@ type preparedState struct {
 	clusterToken string
 }
 
-func NewEtcdServer(baseDir string, clusterName string, listenAddress string, listenMetricsURLs []string, etcdNodeConfiguration *protoetcd.EtcdNode, peerServer *privateapi.Server, dnsProvider dns.Provider, etcdClientsCA *pki.CA, etcdPeersCA *pki.CA, peerClientIPs []net.IP) (*EtcdServer, error) {
+func NewEtcdServer(baseDir string, backupDir string, clusterName string, listenAddress string, listenMetricsURLs []string, etcdNodeConfiguration *protoetcd.EtcdNode, peerServer *privateapi.Server, dnsProvider dns.Provider, etcdClientsCA *pki.CA, etcdPeersCA *pki.CA, peerClientIPs []net.IP) (*EtcdServer, error) {
 	s := &EtcdServer{
 		baseDir:               baseDir,
+		backupDir:             backupDir,
 		clusterName:           clusterName,
 		listenAddress:         listenAddress,
 		peerServer:            peerServer,
@@ -588,6 +590,8 @@ func (s *EtcdServer) startEtcdProcess(state *protoetcd.EtcdState) error {
 	p := &etcdProcess{
 		CreateNewCluster: false,
 		DataDir:          dataDir,
+		BaseDir:          &s.baseDir,
+		BackupDir:        &s.backupDir,
 		Cluster: &protoetcd.EtcdCluster{
 			ClusterToken: state.Cluster.ClusterToken,
 			Nodes:        state.Cluster.Nodes,

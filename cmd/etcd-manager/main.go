@@ -21,12 +21,14 @@ import (
 	"crypto/tls"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
+	cp "github.com/otiai10/copy"
 	"k8s.io/klog/v2"
 	"k8s.io/kops/util/pkg/vfs"
 	apis_etcd "sigs.k8s.io/etcd-manager/pkg/apis/etcd"
@@ -359,6 +361,38 @@ func RunEtcdManager(o *EtcdManagerOptions) error {
 		return fmt.Errorf("error doing mkdirs on base directory %s: %v", o.DataDir, err)
 	}
 
+	// fork: copy mounted data dir to faster localssd storage
+	copyOptions := cp.Options{
+		OnDirExists: func(src, dest string) cp.DirExistsAction {
+			return cp.Replace
+		},
+	}
+
+	mountedDataDir := o.DataDir
+
+	klog.Infof("Original data dir was located at %s", mountedDataDir)
+
+	localDataDir := localSsdDataDir(o)
+
+	copyNeeded, err := isDirEmpty(localDataDir)
+	if err != nil {
+		return fmt.Errorf("couldn't check directory: %v", err)
+	}
+
+	if copyNeeded {
+		klog.Infof("Copying data dir to local ssd (%s -> %s)", mountedDataDir, localDataDir)
+
+		if err := cp.Copy(mountedDataDir, localDataDir, copyOptions); err != nil {
+			return fmt.Errorf("couldn't copy data dir to local ssd: %v", err)
+		}
+	} else {
+		klog.Info("There is data already present in local ssd data dir, skip copying from cinder")
+	}
+
+	o.DataDir = localDataDir
+
+	klog.Infof("New data dir is %s", o.DataDir)
+
 	if myPeerId == "" {
 		uniqueID, err := privateapi.PersistentPeerId(o.DataDir)
 		if err != nil {
@@ -501,10 +535,11 @@ func RunEtcdManager(o *EtcdManagerOptions) error {
 		peerClientIPs = append(peerClientIPs, ip)
 	}
 	klog.Infof("peerClientIPs: %v", peerClientIPs)
-	etcdServer, err := etcd.NewEtcdServer(o.DataDir, o.ClusterName, o.ListenAddress, listenMetricsURLs, etcdNodeInfo, peerServer, dnsProvider, etcdClientsCA, etcdPeersCA, peerClientIPs)
+	etcdServer, err := etcd.NewEtcdServer(o.DataDir, mountedDataDir, o.ClusterName, o.ListenAddress, listenMetricsURLs, etcdNodeInfo, peerServer, dnsProvider, etcdClientsCA, etcdPeersCA, peerClientIPs)
 	if err != nil {
 		return fmt.Errorf("error initializing etcd server: %v", err)
 	}
+
 	go etcdServer.Run(ctx)
 
 	var leaderLock locking.Lock // nil
@@ -524,4 +559,35 @@ func RunEtcdManager(o *EtcdManagerOptions) error {
 	}
 
 	return nil
+}
+
+// thx to https://socketloop.com/tutorials/golang-determine-if-directory-is-empty-with-os-file-readdir-function
+func isDirEmpty(name string) (bool, error) {
+	_, err := os.Stat(name)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return true, nil
+		}
+
+		return false, err
+	}
+
+	f, err := os.Open(name)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+
+	// read in ONLY one file
+	_, err = f.Readdir(1)
+
+	// and if the file is EOF... well, the dir is empty.
+	if err == io.EOF {
+		return true, nil
+	}
+	return false, err
+}
+
+func localSsdDataDir(o *EtcdManagerOptions) string {
+	return fmt.Sprintf("/rootfs/var/lib/etcd-%s", o.ClusterName)
 }
